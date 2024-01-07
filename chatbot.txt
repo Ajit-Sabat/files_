@@ -1,0 +1,87 @@
+CREATE TABLE interviews (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  interview_id VARCHAR(255) NOT NULL,
+  status VARCHAR(255) DEFAULT 'pending'
+);
+
+CREATE TABLE rejected_interviews (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  interview_id VARCHAR(255) NOT NULL
+);
+
+
+############################
+
+from flask import Flask, request
+import gupshup_python_api_client as gupshup
+import mysql.connector
+
+app = Flask(__name__)
+client = gupshup.Client()
+db = mysql.connector.connect(
+  host="your_mysql_host",
+  user="your_mysql_user",
+  password="your_mysql_password",
+  database="your_database_name"
+)
+
+@app.route('/webhook', methods=['POST'])
+def handle_message():
+  message = request.json['message']
+  phone_number = message['from']
+
+  if message['type'] == 'text':
+    # Process text messages
+    response = process_text_message(message['text'], phone_number)
+    client.send_message(phone_number=phone_number, text=response)
+
+  elif message['type'] == 'interactive':
+    # Process interactive messages (radio buttons)
+    process_interactive_message(message, phone_number)
+
+  return '', 200
+
+def process_text_message(text, phone_number):
+  # Fetch interview IDs from MySQL
+  cursor = db.cursor()
+  cursor.execute("SELECT interview_id FROM interviews WHERE status = 'pending'")
+  interview_ids = cursor.fetchall()
+
+  # Create message with radio buttons for each interview ID
+  buttons = []
+  for interview_id in interview_ids:
+    button = {
+      "type": "radio",
+      "title": interview_id[0],  # Display interview_id as button title
+      "payload": f"selected_{interview_id[0]}"  # Unique payload for each button
+    }
+    buttons.append(button)
+
+  response = {
+    "type": "text",
+    "text": "Please select or reject the following interview IDs:",
+    "buttons": buttons
+  }
+  return response
+
+def process_interactive_message(message, phone_number):
+  selected_interview_id = message['selected_option']['payload']
+  status = selected_interview_id.split('_')[0]  # Extract status from payload
+  interview_id = selected_interview_id.split('_')[1]
+
+  # Update database based on status
+  cursor = db.cursor()
+  if status == 'selected':
+    cursor.execute("UPDATE interviews SET status = 'selected' WHERE interview_id = %s", (interview_id,))
+  else:
+    cursor.execute("INSERT INTO rejected_interviews (interview_id) VALUES (%s)", (interview_id,))
+  db.commit()
+
+  response = {
+    "type": "text",
+    "text": f"Thank you for your response. Interview ID {interview_id} has been {status}."
+  }
+  client.send_message(phone_number=phone_number, text=response)
+
+if __name__ == '__main__':
+  app.run()
